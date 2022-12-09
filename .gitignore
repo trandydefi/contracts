@@ -1,0 +1,7 @@
+build
+bin
+node_modules
+.env
+.env.fork
+.idea
+contracts/**/*.json
