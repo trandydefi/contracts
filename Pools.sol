@@ -197,7 +197,7 @@ contract Pools is Ownable {
         uint _min;
         uint _max;
         (_min, _max) = minMaxUSD2BNB(pid);
-        require(msg.value > _min && msg.value <= _max, 'Pools::deposit: Invalid amount');
+        require(msg.value >= _min && msg.value <= _max, 'Pools::deposit: Invalid amount');
         require(p.enable, 'Pools::deposit: pool disabled');
 
         uint tax = msg.value * taxPercent / interestDecimal;
