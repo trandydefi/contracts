@@ -161,7 +161,7 @@ contract Pools is Ownable {
         userTotalLock[_msgSender()] -= u.totalLock;
         usdTotalLock -= bnb2USD(u.totalLock);
 
-        p.totalLock = 0;
+        p.totalLock -= u.totalLock;
         u.totalLock = 0;
         u.startTime = 0;
         remainComm[ceo] += tax;
