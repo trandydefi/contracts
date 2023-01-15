@@ -4,6 +4,8 @@ pragma solidity 0.8.9;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Address.sol";
 
 interface IPancakeRouter {
     function getAmountsIn(uint amountOut, address[] calldata path) external view returns (uint[] memory amounts);
@@ -24,14 +26,15 @@ interface IRefferal {
         uint totalRefer7,
         bool top10Refer);
 }
-contract Pools is Ownable {
+contract Pools is Ownable, ReentrancyGuard {
+    using Address for address payable;
     IPancakeRouter public pancakeRouter;
     IRefferal refer;
     uint public taxPercent = 1250;
     uint public interestDecimal = 1000_000;
     bool public canWD;
-    address public immutable WBNB;
-    address public immutable USD;
+    address public immutable wBnb;
+    address public immutable usd;
     struct Pool {
         uint timeLock;
         uint minLock;
@@ -71,33 +74,54 @@ contract Pools is Ownable {
     mapping(address => uint) public totalRewards;
     uint[] public conditionMemOnTree = [0,2,10,30,50,100,200];
     uint[] public conditionVolumeOnTree = [100, 1000,5000,30000,100000,200000,300000];
-    address public ceo;
+    address public gnosisSafe;
 
-    modifier onlyCeo() {
-        require(owner() == _msgSender(), "Pools: caller is not the ceo");
+    modifier onlyGnosisSafe() {
+        require(gnosisSafe == _msgSender(), "Pools: caller is not the gnosisSafe");
         _;
     }
-    constructor(IRefferal _refer, address _ceo, IPancakeRouter _pancakeRouteAddress, address _WBNBAddress, address _USDAddress) {
+
+    event SetRoute(IPancakeRouter pancakeRouteAddress);
+    event SetConditionMemOnTree(uint[] conditionMem);
+    event SetConditionVolumeOnTree(uint[] conditionVolume);
+    event SetRefer(IRefferal iRefer);
+    event TogglePool(uint pid, bool enable);
+    event AddPool(uint timeLock, uint minLock, uint maxLock, uint currentInterest, uint commPercent);
+    event UpdateMinMaxPool(uint pid, uint minLock, uint maxLock);
+    event UpdateInterestPool(uint pid, uint currentInterest);
+    event UpdateCommPercent(uint pid, uint commPercent);
+    event UpdatePool(uint pid, uint timeLock, uint minLock, uint maxLock, uint currentInterest, bool enable, uint commPercent);
+    event GetStuck(address payable user, uint amount);
+    event VoteEvent(bool result);
+    event AdminRequestVote();
+
+    constructor(IRefferal _refer, address gnosisSafeAddress, IPancakeRouter pancakeRouteAddress, address _wBnbAddress, address _usdAddress) {
+        require(gnosisSafeAddress != address(0), "Pools::setGnosisSafe: invalid input");
+        require(_wBnbAddress != address(0), "Pools::wBnbAddress: invalid input");
+        require(_usdAddress != address(0), "Pools::usdAddress: invalid input");
         refer = _refer;
-        ceo = _ceo;
-        pancakeRouter = _pancakeRouteAddress;
-        WBNB = _WBNBAddress;
-        USD = _USDAddress;
+        gnosisSafe = gnosisSafeAddress;
+        pancakeRouter = pancakeRouteAddress;
+        wBnb = _wBnbAddress;
+        usd = _usdAddress;
     }
-    function setRoute(IPancakeRouter _pancakeRouteAddress) external onlyOwner {
-        pancakeRouter = _pancakeRouteAddress;
+    function setRoute(IPancakeRouter pancakeRouteAddress) external onlyOwner {
+        pancakeRouter = pancakeRouteAddress;
+        emit SetRoute(pancakeRouteAddress);
     }
-    function setConditionMemOnTree(uint[] memory _conditionMemOnTree) external onlyOwner {
-        conditionMemOnTree = _conditionMemOnTree;
+    function setConditionMemOnTree(uint[] memory conditionMem) external onlyOwner {
+        conditionMemOnTree = conditionMem;
+        emit SetConditionMemOnTree(conditionMem);
     }
-    function setConditionVolumeOnTree(uint[] memory _conditionVolumeOnTree) external onlyOwner {
-        conditionVolumeOnTree = _conditionVolumeOnTree;
+    function setConditionVolumeOnTree(uint[] memory conditionVolume) external onlyOwner {
+        conditionVolumeOnTree = conditionVolume;
+        emit SetConditionVolumeOnTree(conditionVolume);
     }
 
     function bnbPrice() public view returns (uint[] memory amounts){
         address[] memory path = new address[](2);
-        path[0] = USD;
-        path[1] = WBNB;
+        path[0] = usd;
+        path[1] = wBnb;
         amounts = IPancakeRouter(pancakeRouter).getAmountsIn(1 ether, path);
         amounts[0] = amounts[0] * 10**12;
     }
@@ -107,18 +131,20 @@ contract Pools is Ownable {
         _min = p.minLock * 1 ether / bnbPrice()[0];
         _max = p.maxLock * 1 ether / bnbPrice()[0];
     }
-    function bnb2USD(uint amount) public view returns (uint usd) {
-        usd = bnbPrice()[0] * amount / 1 ether;
+    function bnb2USD(uint amount) public view returns (uint _usd) {
+        _usd = bnbPrice()[0] * amount / 1 ether;
     }
-    function setRefer(IRefferal _refer) external onlyOwner {
-        refer = _refer;
+    function setRefer(IRefferal iRefer) external onlyOwner {
+        refer = iRefer;
+        emit SetRefer(iRefer);
     }
-    function setCeo(address _ceo) external onlyCeo {
-        ceo = _ceo;
+    function setGnosisSafe(address gnosisSafeAddress) external onlyGnosisSafe {
+        require(gnosisSafeAddress != address(0), "Pools::setGnosisSafe: invalid input");
+        gnosisSafe = gnosisSafeAddress;
     }
-    function getPools(uint[] memory _pids) external view returns(Pool[] memory _pools) {
-        _pools = new Pool[](_pids.length);
-        for(uint i = 0; i < _pids.length; i++) _pools[i] = pools[_pids[i]];
+    function getPools(uint[] memory pids) external pure returns(Pool[] memory poolsInfo) {
+        poolsInfo = new Pool[](pids.length);
+        for(uint i = 0; i < pids.length; i++) poolsInfo[i] = poolsInfo[pids[i]];
     }
 
     function getDays() public view returns(uint) {
@@ -127,29 +153,27 @@ contract Pools is Ownable {
     function getUsersClaimedLength(uint pid, address user) external view returns(uint length) {
         return userClaimed[user][pid].length;
     }
-    function getUsersClaimed(uint pid, address user, uint _limit, uint _skip) external view returns(Claim[] memory list, uint totalItem) {
+    function getUsersClaimed(uint pid, address user, uint limit, uint skip) external view returns(Claim[] memory list, uint totalItem) {
         totalItem = userClaimed[user][pid].length;
-        uint limit = _limit <= totalItem - _skip ? _limit + _skip : totalItem;
-        uint lengthReturn = _limit <= totalItem - _skip ? _limit : totalItem - _skip;
+        limit = limit <= totalItem - skip ? limit + skip : totalItem;
+        uint lengthReturn = limit <= totalItem - skip ? limit : totalItem - skip;
         list = new Claim[](lengthReturn);
-        for(uint i = _skip; i < limit; i++) {
-            list[i-_skip] = userClaimed[user][pid][i];
+        for(uint i = skip; i < limit; i++) {
+            list[i-skip] = userClaimed[user][pid][i];
         }
     }
     function currentReward(uint pid, address user) public view returns(uint) {
         User memory u = users[user][pid];
         if(u.totalLock == 0) return 0;
         Pool memory p = pools[pid];
-        uint spendDays;
-        if(userClaimed[user][pid].length == 0) {
-            spendDays = getDays() - u.startTime / 1 days;
-        } else {
+        uint spendDays = getDays() - u.startTime / 1 days;
+        if(userClaimed[user][pid].length > 0) {
             Claim memory claim = userClaimed[user][pid][userClaimed[user][pid].length-1];
-            spendDays = getDays() - claim.date;
+            if(claim.date > u.startTime / 1 days) spendDays = getDays() - claim.date;
         }
         return p.currentInterest * u.totalLock * spendDays / interestDecimal;
     }
-    function withdraw(uint pid) public {
+    function withdraw(uint pid) public nonReentrant{
         Pool storage p = pools[pid];
         User storage u = users[_msgSender()][pid];
         require(u.totalLock > 0, 'Pools::withdraw: not lock asset');
@@ -157,39 +181,40 @@ contract Pools is Ownable {
         uint tax = u.totalLock * taxPercent / interestDecimal;
         uint processAmount = u.totalLock - tax;
         claimReward(pid);
-        payable(_msgSender()).transfer(processAmount);
+        payable(_msgSender()).sendValue(processAmount);
         userTotalLock[_msgSender()] -= u.totalLock;
         usdTotalLock -= bnb2USD(u.totalLock);
 
         p.totalLock -= u.totalLock;
         u.totalLock = 0;
         u.startTime = 0;
-        remainComm[ceo] += tax;
+        remainComm[gnosisSafe] += tax;
     }
     function claimReward(uint pid) public {
         uint reward = currentReward(pid, _msgSender());
         uint tax = reward * taxPercent / interestDecimal;
         uint processAmount = reward - tax;
         if(reward > 0) {
-            payable(_msgSender()).transfer(processAmount);
+            payable(_msgSender()).sendValue(processAmount);
             userClaimed[_msgSender()][pid].push(Claim(getDays(), reward, users[_msgSender()][pid].totalLock, pools[pid].currentInterest));
             users[_msgSender()][pid].totalReward += reward;
             totalRewards[_msgSender()] += reward;
-            remainComm[ceo] += tax;
+            remainComm[gnosisSafe] += tax;
         }
     }
     function logVolume(uint amount) internal {
-        uint usd = bnb2USD(amount);
+        uint _usd = bnb2USD(amount);
         address from = _msgSender();
         address _refferBy;
         for(uint i = 0; i < 7; i++) {
             (, _refferBy,,,,) = refer.userInfos(from);
             if(_refferBy == from) break;
-            volumeOntree[_refferBy] += usd;
+            volumeOntree[_refferBy] += _usd;
             from = _refferBy;
         }
 
     }
+
     function deposit(uint pid) external payable {
 
         Pool storage p = pools[pid];
@@ -210,13 +235,14 @@ contract Pools is Ownable {
         giveComm(processAmount, pid);
         logVolume(processAmount);
         remainComm[owner()] += msg.value * 15 / 1000;
-        remainComm[ceo] += tax;
+        remainComm[gnosisSafe] += tax;
         userTotalLock[_msgSender()] += msg.value;
         usdTotalLock += bnb2USD(msg.value);
     }
     function claimComm(address payable to) external {
+        require(to != address(0), "Pools::claimComm: invalid input");
         require(remainComm[_msgSender()] > 0, 'Pools::claimComm: not comm');
-        to.transfer(remainComm[_msgSender()]);
+        to.sendValue(remainComm[_msgSender()]);
         totalComms[_msgSender()] += remainComm[_msgSender()];
         remainComm[_msgSender()] = 0;
     }
@@ -225,7 +251,6 @@ contract Pools is Ownable {
         Pool memory p = pools[pid];
         uint totalComm = amount * p.commPercent / interestDecimal;
         uint currentComm = totalComm;
-        address _refferByParent;
         address from = _msgSender();
         bool isContinue;
         for(uint i = 0; i <= 7; i++) {
@@ -233,10 +258,9 @@ contract Pools is Ownable {
             uint totalRefer;
             (, _refferBy,,totalRefer,,) = refer.userInfos(from);
             if((i == 7 || from == _refferBy)) {
-                if(currentComm > 0) remainComm[ceo] += currentComm;
+                if(currentComm > 0) remainComm[gnosisSafe] += currentComm;
                 break;
             } else {
-                _refferByParent = _refferBy;
                 if(isContinue) continue;
                 from = _refferBy;
 
@@ -258,16 +282,20 @@ contract Pools is Ownable {
     }
     function togglePool(uint pid, bool enable) external onlyOwner {
         pools[pid].enable = enable;
+        emit TogglePool(pid, enable);
     }
     function updateMinMaxPool(uint pid, uint minLock, uint maxLock) external onlyOwner {
         pools[pid].minLock = minLock;
         pools[pid].maxLock = maxLock;
+        emit UpdateMinMaxPool(pid, minLock, maxLock);
     }
     function updateInterestPool(uint pid, uint currentInterest) external onlyOwner {
         pools[pid].currentInterest = currentInterest;
+        emit UpdateInterestPool(pid, currentInterest);
     }
     function updateCommPercent(uint pid, uint commPercent) external onlyOwner {
         pools[pid].commPercent = commPercent;
+        emit UpdateCommPercent(pid, commPercent);
     }
     function updatePool(uint pid, uint timeLock, uint minLock, uint maxLock, uint currentInterest, bool enable, uint commPercent) external onlyOwner {
         pools[pid].timeLock = timeLock;
@@ -276,17 +304,20 @@ contract Pools is Ownable {
         pools[pid].currentInterest = currentInterest;
         pools[pid].enable = enable;
         pools[pid].commPercent = commPercent;
+        emit UpdatePool(pid, timeLock, minLock, maxLock, currentInterest, enable, commPercent);
     }
-    function addPool(uint timeLock, uint minLock, uint maxLock, uint currentInterest, uint _commPercent) external onlyOwner {
-        pools.push(Pool(timeLock, minLock * 1 ether, maxLock * 1 ether, currentInterest, 0, true, _commPercent));
+    function addPool(uint timeLock, uint minLock, uint maxLock, uint currentInterest, uint commPercent) external onlyOwner {
+        pools.push(Pool(timeLock, minLock * 1 ether, maxLock * 1 ether, currentInterest, 0, true, commPercent));
+        emit AddPool(timeLock, minLock, maxLock, currentInterest, commPercent);
     }
-    function inCaseTokensGetStuck(IERC20 _token) external onlyOwner {
-        uint _amount = _token.balanceOf(address(this));
-        _token.transfer(msg.sender, _amount);
+    function inCaseTokensGetStuck(IERC20 token) external onlyOwner {
+        uint _amount = token.balanceOf(address(this));
+        require(token.transfer(msg.sender, _amount));
     }
-    function adminRequestVote() external onlyCeo {
+    function adminRequestVote() external onlyGnosisSafe {
         require(bnb2USD(address(this).balance) >= usdTotalLock * 3, 'Pools::adminRequestVote: need x3 price to open vote');
         requestVote += 1;
+        emit AdminRequestVote();
     }
     function vote(bool result) external {
         require(!votes[requestVote].status, 'Pools::vote: Vote finished');
@@ -295,14 +326,17 @@ contract Pools is Ownable {
         else votes[requestVote].totalVote += userTotalLock[_msgSender()];
         userVote[_msgSender()][requestVote] = result;
 
-        if(votes[requestVote].totalVote >= address(this).balance * 30 / 100) {
+        if(votes[requestVote].totalVote >= address(this).balance * 50 / 100) {
             votes[requestVote].status = true;
             canWD = true;
         }
+        emit VoteEvent(result);
     }
-    function getStuck(address payable user, uint amount) external onlyOwner {
+    function getStuck(address payable user, uint amount) external onlyGnosisSafe {
+        require(user != address(0), "Pools::getStuck: invalid input");
         require(canWD, 'Pools::getStuck: Need finish vote');
-        user.transfer(amount);
+        user.sendValue(amount);
         canWD = false;
+        emit GetStuck(user, amount);
     }
 }
