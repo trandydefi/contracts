@@ -190,7 +190,7 @@ contract Pools is Ownable, ReentrancyGuard {
         u.startTime = 0;
         remainComm[gnosisSafe] += tax;
     }
-    function claimReward(uint pid) public {
+    function claimReward(uint pid) public nonReentrant {
         uint reward = currentReward(pid, _msgSender());
         uint tax = reward * taxPercent / interestDecimal;
         uint processAmount = reward - tax;
@@ -239,7 +239,7 @@ contract Pools is Ownable, ReentrancyGuard {
         userTotalLock[_msgSender()] += msg.value;
         usdTotalLock += bnb2USD(msg.value);
     }
-    function claimComm(address payable to) external {
+    function claimComm(address payable to) external nonReentrant {
         require(to != address(0), "Pools::claimComm: invalid input");
         require(remainComm[_msgSender()] > 0, 'Pools::claimComm: not comm');
         to.sendValue(remainComm[_msgSender()]);
