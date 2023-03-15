@@ -26,10 +26,10 @@ interface IRefferal {
         uint totalRefer7,
         bool top10Refer);
 }
-contract Pools is Ownable, ReentrancyGuard {
+contract PoolsMatic is Ownable, ReentrancyGuard {
     using Address for address payable;
     IPancakeRouter public pancakeRouter;
-    IRefferal refer;
+    IRefferal public refer;
     uint public taxPercent = 1250;
     uint public interestDecimal = 1000_000;
     uint public multiTimeInterest = 1095;
@@ -70,22 +70,43 @@ contract Pools is Ownable, ReentrancyGuard {
         uint status; // 1 = request; 2 = success
         uint amount;
     }
+    struct RankReward {
+        uint minStart;
+        uint stakingPercent;
+        uint total;
+        uint totalMember;
+        uint rewardInMonth;
+        uint remainInMonth;
+    }
+    struct Child {
+        uint direct;
+        uint downLine;
+        mapping(address => bool) isChild;
+    }
     Pool[] public pools;
     mapping(address => mapping(uint => User)) public users; // user => pId => detail
     mapping(address => uint) public userTotalLock; // user => totalLock
+    mapping(address => uint) public userRank; // user => rank
     uint public usdTotalLock;
     uint public requestVote;
     uint public requestVoteConfigInterest;
     uint public requestVoteConfigComm;
+    uint public giveRankRewardTime;
     mapping(uint => Vote) public votes;
     mapping(uint => mapping(uint => VoteConfig)) public voteConfigs; // vote type => requestVote => vote config detail, 1 = interest percent; 2 = comm percent
     mapping(address => mapping(uint => bool)) public userVote; // user => requestVote => result
-    mapping(address => mapping(uint => bool)) public userVoteConfig; // user => requestVote => result
+    mapping(address => mapping(uint => mapping(uint => bool))) public userVoteConfig; // user => vote type => requestVote => result
     mapping(address => mapping(uint => Claim[])) public userClaimed;
+    mapping(address => mapping(uint => bool)) public userRankRewardClaimed; // user => month => is claimed
+    mapping(address => Child) public childs;
     mapping(address => uint) public remainComm;
     mapping(address => uint) public volumeOntree;
+    mapping(address => uint) public directStaked;
+    mapping(address => uint) public lineStaked;
     mapping(address => uint) public totalComms;
     mapping(address => uint) public totalRewards;
+    mapping(uint => RankReward) public rankRewards;
+
     uint[] public conditionMemOnTree = [0,2,10,30,50,100,200];
     uint[] public conditionVolumeOnTree = [100, 1000,5000,30000,100000,200000,300000];
     address public gnosisSafe;
@@ -104,7 +125,7 @@ contract Pools is Ownable, ReentrancyGuard {
     event UpdateMinMaxPool(uint pid, uint minLock, uint maxLock);
     event UpdateInterestPool(uint pid, uint currentInterest);
     event UpdateCommPercent(uint pid, uint commPercent);
-    event UpdatePool(uint pid, uint timeLock, uint minLock, uint maxLock, uint bonusInterest, bool enable);
+    event UpdatePool(uint pid, uint minLock, uint maxLock, uint bonusInterest, bool enable);
     event GetStuck(address payable user, uint amount);
     event VoteEvent(bool result);
     event VoteConfigEvent(bool result);
@@ -120,6 +141,12 @@ contract Pools is Ownable, ReentrancyGuard {
         pancakeRouter = pancakeRouteAddress;
         wBnb = _wBnbAddress;
         usd = _usdAddress;
+        // user default rank 0
+        rankRewards[1] = RankReward(10000 ether, 20000, 0, 0, 0, 0);
+        rankRewards[2] = RankReward(20000 ether, 5000, 0, 0, 0, 0);
+        rankRewards[3] = RankReward(20000 ether, 5000, 0, 0, 0, 0);
+        rankRewards[4] = RankReward(20000 ether, 5000, 0, 0, 0, 0);
+        rankRewards[5] = RankReward(20000 ether, 5000, 0, 0, 0, 0);
     }
     function setRoute(IPancakeRouter pancakeRouteAddress) external onlyGnosisSafe {
         pancakeRouter = pancakeRouteAddress;
@@ -166,6 +193,9 @@ contract Pools is Ownable, ReentrancyGuard {
     function getDays() public view returns(uint) {
         return block.timestamp / 1 days;
     }
+    function getMonths() public view returns(uint) {
+        return block.timestamp / 30 days;
+    }
     function getUsersClaimedLength(uint pid, address user) external view returns(uint length) {
         return userClaimed[user][pid].length;
     }
@@ -187,7 +217,9 @@ contract Pools is Ownable, ReentrancyGuard {
             Claim memory claim = userClaimed[user][pid][userClaimed[user][pid].length-1];
             if(claim.date > u.startTime / 1 days) spendDays = getDays() - claim.date;
         }
-        return p.currentInterest * u.totalLock * spendDays / interestDecimal;
+        uint rw = p.currentInterest * u.totalLock * spendDays / interestDecimal;
+        if(rw > u.remainReward) rw = u.remainReward;
+        return rw;
     }
 
     function claimReward(uint pid) public nonReentrant {
@@ -215,10 +247,61 @@ contract Pools is Ownable, ReentrancyGuard {
             if(_refferBy == from) break;
             volumeOntree[_refferBy] += _usd;
             from = _refferBy;
+            if(volumeOntree[_refferBy] >= 50_000 ether && volumeOntree[_refferBy] < 200_000 ether && userTotalLock[_refferBy] >= 500 ether && childs[_refferBy].direct >= 2 && childs[_refferBy].downLine >= 10) {
+                userRank[_refferBy] = 1;
+                rankRewards[1].totalMember += 1;
+            }
+            else if(volumeOntree[_refferBy] >= 200_000 ether && volumeOntree[_refferBy] < 500_000 ether && userTotalLock[_refferBy] >= 1000 ether && childs[_refferBy].direct >= 5 && childs[_refferBy].downLine >= 50) {
+                userRank[_refferBy] = 2;
+                rankRewards[1].totalMember -= 1;
+                rankRewards[2].totalMember += 1;
+            }
+            else if(volumeOntree[_refferBy] >= 500_000 ether && volumeOntree[_refferBy] < 1000_000 ether && userTotalLock[_refferBy] >= 2000 ether && childs[_refferBy].direct >= 10 && childs[_refferBy].downLine >= 100) {
+                userRank[_refferBy] = 3;
+                rankRewards[2].totalMember -= 1;
+                rankRewards[3].totalMember += 1;
+            }
+            else if(volumeOntree[_refferBy] >= 1000_000 ether && volumeOntree[_refferBy] < 3000_000 ether && userTotalLock[_refferBy] >= 4000 ether && childs[_refferBy].direct >= 10 && childs[_refferBy].downLine >= 200) {
+                userRank[_refferBy] = 4;
+                rankRewards[3].totalMember -= 1;
+                rankRewards[4].totalMember += 1;
+            }
+            else if(volumeOntree[_refferBy] >= 3000_000 ether && userTotalLock[_refferBy] >= 50000 ether && childs[_refferBy].direct >= 10 && childs[_refferBy].downLine >= 500) {
+                userRank[_refferBy] = 5;
+                rankRewards[4].totalMember -= 1;
+                rankRewards[5].totalMember += 1;
+            }
         }
 
     }
 
+    function giveRankRewardMonthly() external onlyGnosisSafe {
+        require(block.timestamp - giveRankRewardTime > 30 days, "Pool::giveRankRewardMonthly: Not enough time");
+        giveRankRewardTime = block.timestamp;
+        for(uint i = 1; i < 6; i++) {
+            rankRewards[i].total += rankRewards[i].remainInMonth;
+            if(bnb2USD(rankRewards[i].total) >= rankRewards[i].minStart) {
+                rankRewards[i].remainInMonth = rankRewards[i].total * 20 / 100;
+                rankRewards[i].rewardInMonth = rankRewards[i].remainInMonth / rankRewards[i].totalMember;
+                rankRewards[i].total -= rankRewards[i].remainInMonth;
+            } else {
+                rankRewards[i].remainInMonth = 0;
+                rankRewards[i].rewardInMonth = 0;
+            }
+        }
+    }
+    function claimRankRewardMonthly(uint rid) external {
+        require(rid > 0 && rid < 6, "Pool::claimRankRewardMonthly: Invalid rank id");
+        require(!userRankRewardClaimed[_msgSender()][block.timestamp / getMonths()], "Pool::claimRankRewardMonthly: Claimed");
+        userRankRewardClaimed[_msgSender()][block.timestamp / getMonths()] = true;
+        payable(_msgSender()).sendValue(rankRewards[rid].rewardInMonth);
+        rankRewards[rid].remainInMonth -= rankRewards[rid].rewardInMonth;
+    }
+    function giveRankReward(uint amount) internal {
+        for(uint i = 1; i < 6; i++) {
+            rankRewards[i].total += amount * rankRewards[i].stakingPercent / interestDecimal;
+        }
+    }
     function deposit(uint pid) external payable {
 
         Pool storage p = pools[pid];
@@ -226,9 +309,9 @@ contract Pools is Ownable, ReentrancyGuard {
         uint _min;
         uint _max;
         (_min, _max) = minMaxUSD2BNB(pid);
-        require(msg.value >= _min && msg.value <= _max, 'Pools::deposit: Invalid amount');
+        require(msg.value >= _min, 'Pools::deposit: Invalid amount');
         require(p.enable, 'Pools::deposit: pool disabled');
-
+        if(u.totalLock > 0) require(block.timestamp - u.startTime < 7 days, 'Pools::deposit: Cant add more same pool after 7 days');
         uint tax = msg.value * taxPercent / interestDecimal;
         uint processAmount = msg.value - tax;
 
@@ -238,9 +321,11 @@ contract Pools is Ownable, ReentrancyGuard {
         u.remainReward = p.currentInterest * processAmount * multiTimeInterest / interestDecimal + u.remainReward;
         p.totalLock += processAmount;
         giveComm(processAmount, pid);
+        giveRankReward(processAmount);
         logVolume(processAmount);
         remainComm[owner()] += msg.value * 15 / 1000;
         remainComm[gnosisSafe] += tax;
+
         userTotalLock[_msgSender()] += msg.value;
         usdTotalLock += bnb2USD(msg.value);
     }
@@ -264,7 +349,6 @@ contract Pools is Ownable, ReentrancyGuard {
                 break;
             } else {
                 from = _refferBy;
-
                 uint comm = totalComm / (2 ** (i+1));
                 remainComm[_refferBy] += comm;
                 currentComm -= comm;
@@ -281,8 +365,7 @@ contract Pools is Ownable, ReentrancyGuard {
         bool isContinue;
         for(uint i = 0; i <= 7; i++) {
             address _refferBy;
-            uint totalRefer;
-            (, _refferBy,,totalRefer,,) = refer.userInfos(from);
+            (, _refferBy,,,,) = refer.userInfos(from);
             if((i == 7 || from == _refferBy)) {
                 if(currentComm > 0) remainComm[gnosisSafe] += currentComm;
                 break;
@@ -291,16 +374,21 @@ contract Pools is Ownable, ReentrancyGuard {
                 from = _refferBy;
 
                 uint comm = totalComm / (2 ** (i+1));
-                if(i == 0) {
-                    if(users[_refferBy][pid].totalLock > 0 && volumeOntree[_refferBy] >= conditionVolumeOnTree[i]) {
-                        remainComm[_refferBy] += comm;
-                        currentComm -= comm;
-                    }
-                }
-                else if(totalRefer >= conditionMemOnTree[i] && volumeOntree[_refferBy] >= conditionVolumeOnTree[i]) {
+                if(userTotalLock[_refferBy] > 0) {
                     remainComm[_refferBy] += comm;
                     currentComm -= comm;
-                } else isContinue = true;
+                }
+                else isContinue = true;
+                if(i == 0) {
+                    if(!childs[_refferBy].isChild[_msgSender()]) {
+                        childs[_refferBy].direct += 1;
+                    }
+                } else {
+                    if(!childs[_refferBy].isChild[_msgSender()]) {
+                        childs[_refferBy].isChild[_msgSender()] = true;
+                        childs[_refferBy].downLine += 1;
+                    }
+                }
             }
 
         }
@@ -325,12 +413,12 @@ contract Pools is Ownable, ReentrancyGuard {
         pools[pid].commPercent = commPercent;
         emit UpdateCommPercent(pid, commPercent);
     }
-    function updatePool(uint pid, uint timeLock, uint minLock, uint maxLock, uint bonusInterest, bool enable) external onlyGnosisSafe {
+    function updatePool(uint pid, uint minLock, uint maxLock, uint bonusInterest, bool enable) external onlyGnosisSafe {
         pools[pid].minLock = minLock;
         pools[pid].maxLock = maxLock;
         pools[pid].bonusInterest = bonusInterest;
         pools[pid].enable = enable;
-        emit UpdatePool(pid, timeLock, minLock, maxLock, bonusInterest, enable);
+        emit UpdatePool(pid, minLock, maxLock, bonusInterest, enable);
     }
     function addPool(uint minLock, uint maxLock, uint currentInterest, uint bonusInterest, uint commPercent) external onlyGnosisSafe {
         pools.push(Pool(minLock * 1 ether, maxLock * 1 ether, currentInterest, bonusInterest, 0, true, commPercent));
@@ -374,10 +462,10 @@ contract Pools is Ownable, ReentrancyGuard {
         }
         VoteConfig storage v = voteConfigs[voteType][reqVote];
         require(v.status == 1, 'Pools::voteConfig: Vote is not requested');
-        require(result != userVoteConfig[_msgSender()][reqVote], 'Pools::vote: Same result');
-        if(userVoteConfig[_msgSender()][reqVote]) v.totalVote -= userTotalLock[_msgSender()];
+        require(result != userVoteConfig[_msgSender()][voteType][reqVote], 'Pools::vote: Same result');
+        if(userVoteConfig[_msgSender()][voteType][reqVote]) v.totalVote -= userTotalLock[_msgSender()];
         else v.totalVote += userTotalLock[_msgSender()];
-        userVoteConfig[_msgSender()][reqVote] = result;
+        userVoteConfig[_msgSender()][voteType][reqVote] = result;
 
         if(v.totalVote >= address(this).balance * 50 / 100) {
             v.status = 2;
