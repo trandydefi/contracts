@@ -26,14 +26,13 @@ interface IRefferal {
         uint totalRefer7,
         bool top10Refer);
 }
-contract PoolsMatic is Ownable, ReentrancyGuard {
+contract Pools is Ownable, ReentrancyGuard {
     using Address for address payable;
     IPancakeRouter public pancakeRouter;
     IRefferal public refer;
     uint public taxPercent = 1250;
     uint public interestDecimal = 1000_000;
     uint public multiTimeInterest = 1095;
-    bool public canWD;
     address public immutable wBnb;
     address public immutable usd;
     struct Pool {
@@ -88,13 +87,11 @@ contract PoolsMatic is Ownable, ReentrancyGuard {
     mapping(address => uint) public userTotalLock; // user => totalLock
     mapping(address => uint) public userRank; // user => rank
     uint public usdTotalLock;
-    uint public requestVote;
     uint public requestVoteConfigInterest;
     uint public requestVoteConfigComm;
     uint public giveRankRewardTime;
     mapping(uint => Vote) public votes;
     mapping(uint => mapping(uint => VoteConfig)) public voteConfigs; // vote type => requestVote => vote config detail, 1 = interest percent; 2 = comm percent
-    mapping(address => mapping(uint => bool)) public userVote; // user => requestVote => result
     mapping(address => mapping(uint => mapping(uint => bool))) public userVoteConfig; // user => vote type => requestVote => result
     mapping(address => mapping(uint => Claim[])) public userClaimed;
     mapping(address => mapping(uint => bool)) public userRankRewardClaimed; // user => month => is claimed
@@ -129,7 +126,6 @@ contract PoolsMatic is Ownable, ReentrancyGuard {
     event GetStuck(address payable user, uint amount);
     event VoteEvent(bool result);
     event VoteConfigEvent(bool result);
-    event AdminRequestVote();
     event AdminRequestVoteConfig();
 
     constructor(IRefferal _refer, address gnosisSafeAddress, IPancakeRouter pancakeRouteAddress, address _wBnbAddress, address _usdAddress) {
@@ -166,7 +162,6 @@ contract PoolsMatic is Ownable, ReentrancyGuard {
         path[0] = usd;
         path[1] = wBnb;
         amounts = IPancakeRouter(pancakeRouter).getAmountsIn(1 ether, path);
-        amounts[0] = amounts[0] * 10**12;
     }
 
     function minMaxUSD2BNB(uint pid) public view returns (uint _min, uint _max) {
@@ -311,7 +306,8 @@ contract PoolsMatic is Ownable, ReentrancyGuard {
         (_min, _max) = minMaxUSD2BNB(pid);
         require(msg.value >= _min, 'Pools::deposit: Invalid amount');
         require(p.enable, 'Pools::deposit: pool disabled');
-        if(u.totalLock > 0) require(block.timestamp - u.startTime < 7 days, 'Pools::deposit: Cant add more same pool after 7 days');
+        if(u.totalLock > 0) require(block.timestamp - u.startTime < 60 minutes, 'Pools::deposit: Cant add more same pool after 7 days');
+        //        if(u.totalLock > 0) require(block.timestamp - u.startTime < 7 days, 'Pools::deposit: Cant add more same pool after 7 days');
         uint tax = msg.value * taxPercent / interestDecimal;
         uint processAmount = msg.value - tax;
 
@@ -428,11 +424,7 @@ contract PoolsMatic is Ownable, ReentrancyGuard {
         uint _amount = token.balanceOf(address(this));
         require(token.transfer(msg.sender, _amount));
     }
-    function adminRequestVote() external onlyGnosisSafe {
-        require(bnb2USD(address(this).balance) >= usdTotalLock * 3, 'Pools::adminRequestVote: need x3 price to open vote');
-        requestVote += 1;
-        emit AdminRequestVote();
-    }
+
     function adminRequestVoteConfig(uint pid, uint voteType, uint amount) external onlyGnosisSafe {
         require(pools[pid].enable, 'Pools::adminRequestVoteConfig: pool not active');
 
@@ -471,25 +463,5 @@ contract PoolsMatic is Ownable, ReentrancyGuard {
             v.status = 2;
         }
         emit VoteConfigEvent(result);
-    }
-    function vote(bool result) external {
-        require(!votes[requestVote].status, 'Pools::vote: Vote finished');
-        require(result != userVote[_msgSender()][requestVote], 'Pools::vote: Same result');
-        if(userVote[_msgSender()][requestVote]) votes[requestVote].totalVote -= userTotalLock[_msgSender()];
-        else votes[requestVote].totalVote += userTotalLock[_msgSender()];
-        userVote[_msgSender()][requestVote] = result;
-
-        if(votes[requestVote].totalVote >= address(this).balance * 50 / 100) {
-            votes[requestVote].status = true;
-            canWD = true;
-        }
-        emit VoteEvent(result);
-    }
-    function getStuck(address payable user, uint amount) external onlyGnosisSafe {
-        require(user != address(0), "Pools::getStuck: invalid input");
-        require(canWD, 'Pools::getStuck: Need finish vote');
-        user.sendValue(amount);
-        canWD = false;
-        emit GetStuck(user, amount);
     }
 }
