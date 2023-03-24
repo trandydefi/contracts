@@ -26,13 +26,13 @@ interface IRefferal {
         uint totalRefer7,
         bool top10Refer);
 }
-contract Pools is Ownable, ReentrancyGuard {
+contract PoolsMatic is Ownable, ReentrancyGuard {
     using Address for address payable;
     IPancakeRouter public pancakeRouter;
     IRefferal public refer;
     uint public taxPercent = 1250;
     uint public interestDecimal = 1000_000;
-    uint public multiTimeInterest = 1095;
+    uint public multiTimeInterest = 730;
     address public immutable wBnb;
     address public immutable usd;
     struct Pool {
@@ -162,6 +162,7 @@ contract Pools is Ownable, ReentrancyGuard {
         path[0] = usd;
         path[1] = wBnb;
         amounts = IPancakeRouter(pancakeRouter).getAmountsIn(1 ether, path);
+        amounts[0] = amounts[0] * 10**12;
     }
 
     function minMaxUSD2BNB(uint pid) public view returns (uint _min, uint _max) {
@@ -256,12 +257,12 @@ contract Pools is Ownable, ReentrancyGuard {
                 rankRewards[2].totalMember -= 1;
                 rankRewards[3].totalMember += 1;
             }
-            else if(volumeOntree[_refferBy] >= 1000_000 ether && volumeOntree[_refferBy] < 3000_000 ether && userTotalLock[_refferBy] >= 4000 ether && childs[_refferBy].direct >= 10 && childs[_refferBy].downLine >= 200) {
+            else if(volumeOntree[_refferBy] >= 1000_000 ether && volumeOntree[_refferBy] < 3000_000 ether && userTotalLock[_refferBy] >= 4000 ether && childs[_refferBy].direct >= 11 && childs[_refferBy].downLine >= 200) {
                 userRank[_refferBy] = 4;
                 rankRewards[3].totalMember -= 1;
                 rankRewards[4].totalMember += 1;
             }
-            else if(volumeOntree[_refferBy] >= 3000_000 ether && userTotalLock[_refferBy] >= 50000 ether && childs[_refferBy].direct >= 10 && childs[_refferBy].downLine >= 500) {
+            else if(volumeOntree[_refferBy] >= 3000_000 ether && userTotalLock[_refferBy] >= 50000 ether && childs[_refferBy].direct >= 12 && childs[_refferBy].downLine >= 500) {
                 userRank[_refferBy] = 5;
                 rankRewards[4].totalMember -= 1;
                 rankRewards[5].totalMember += 1;
@@ -287,6 +288,8 @@ contract Pools is Ownable, ReentrancyGuard {
     }
     function claimRankRewardMonthly(uint rid) external {
         require(rid > 0 && rid < 6, "Pool::claimRankRewardMonthly: Invalid rank id");
+        require(userRank[_msgSender()] == rid, "Pool::claimRankRewardMonthly: Invalid user rank id");
+        require(rankRewards[rid].rewardInMonth > 0, "Pool::claimRankRewardMonthly: Pool reward not met condition");
         require(!userRankRewardClaimed[_msgSender()][block.timestamp / getMonths()], "Pool::claimRankRewardMonthly: Claimed");
         userRankRewardClaimed[_msgSender()][block.timestamp / getMonths()] = true;
         payable(_msgSender()).sendValue(rankRewards[rid].rewardInMonth);
@@ -306,8 +309,7 @@ contract Pools is Ownable, ReentrancyGuard {
         (_min, _max) = minMaxUSD2BNB(pid);
         require(msg.value >= _min, 'Pools::deposit: Invalid amount');
         require(p.enable, 'Pools::deposit: pool disabled');
-        if(u.totalLock > 0) require(block.timestamp - u.startTime < 60 minutes, 'Pools::deposit: Cant add more same pool after 7 days');
-        //        if(u.totalLock > 0) require(block.timestamp - u.startTime < 7 days, 'Pools::deposit: Cant add more same pool after 7 days');
+        if(u.totalLock > 0) require(block.timestamp - u.startTime < 7 days, 'Pools::deposit: Cant add more same pool after 7 days');
         uint tax = msg.value * taxPercent / interestDecimal;
         uint processAmount = msg.value - tax;
 
