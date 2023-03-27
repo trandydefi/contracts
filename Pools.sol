@@ -156,13 +156,19 @@ contract PoolsMatic is Ownable, ReentrancyGuard {
         conditionVolumeOnTree = conditionVolume;
         emit SetConditionVolumeOnTree(conditionVolume);
     }
-
+    function getChainID() public view returns (uint256) {
+        uint256 id;
+        assembly {
+            id := chainid()
+        }
+        return id;
+    }
     function bnbPrice() public view returns (uint[] memory amounts){
         address[] memory path = new address[](2);
         path[0] = usd;
         path[1] = wBnb;
         amounts = IPancakeRouter(pancakeRouter).getAmountsIn(1 ether, path);
-        amounts[0] = amounts[0] * 10**12;
+        if(getChainID() == 137) amounts[0] = amounts[0] * 10**12;
     }
 
     function minMaxUSD2BNB(uint pid) public view returns (uint _min, uint _max) {
@@ -249,22 +255,22 @@ contract PoolsMatic is Ownable, ReentrancyGuard {
             }
             else if(volumeOntree[_refferBy] >= 200_000 ether && volumeOntree[_refferBy] < 500_000 ether && userTotalLock[_refferBy] >= 1000 ether && childs[_refferBy].direct >= 5 && childs[_refferBy].downLine >= 50) {
                 userRank[_refferBy] = 2;
-                rankRewards[1].totalMember -= 1;
+                if(userRank[_refferBy] > 0) rankRewards[userRank[_refferBy]].totalMember -= 1;
                 rankRewards[2].totalMember += 1;
             }
             else if(volumeOntree[_refferBy] >= 500_000 ether && volumeOntree[_refferBy] < 1000_000 ether && userTotalLock[_refferBy] >= 2000 ether && childs[_refferBy].direct >= 10 && childs[_refferBy].downLine >= 100) {
                 userRank[_refferBy] = 3;
-                rankRewards[2].totalMember -= 1;
+                if(userRank[_refferBy] > 0) rankRewards[userRank[_refferBy]].totalMember -= 1;
                 rankRewards[3].totalMember += 1;
             }
             else if(volumeOntree[_refferBy] >= 1000_000 ether && volumeOntree[_refferBy] < 3000_000 ether && userTotalLock[_refferBy] >= 4000 ether && childs[_refferBy].direct >= 11 && childs[_refferBy].downLine >= 200) {
                 userRank[_refferBy] = 4;
-                rankRewards[3].totalMember -= 1;
+                if(userRank[_refferBy] > 0) rankRewards[userRank[_refferBy]].totalMember -= 1;
                 rankRewards[4].totalMember += 1;
             }
             else if(volumeOntree[_refferBy] >= 3000_000 ether && userTotalLock[_refferBy] >= 50000 ether && childs[_refferBy].direct >= 12 && childs[_refferBy].downLine >= 500) {
                 userRank[_refferBy] = 5;
-                rankRewards[4].totalMember -= 1;
+                if(userRank[_refferBy] > 0) rankRewards[userRank[_refferBy]].totalMember -= 1;
                 rankRewards[5].totalMember += 1;
             }
         }
